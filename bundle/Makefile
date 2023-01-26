@@ -93,6 +93,10 @@ help:
 	$(ECHO) " # remove one target"
 	$(ECHO) " make -C bundle clean.<epics-arch> # remove for one target"
 
+install: libevent
+
+uninstall: clean
+
 libevent: libevent.$(EPICS_HOST_ARCH)
 
 clean:
