@@ -97,6 +97,8 @@ install: libevent
 
 uninstall: clean
 
+runtests:
+
 libevent: libevent.$(EPICS_HOST_ARCH)
 
 clean:
