@@ -99,6 +99,8 @@ uninstall: clean
 
 runtests:
 
+ioctests:
+
 libevent: libevent.$(EPICS_HOST_ARCH)
 
 clean:
