@@ -23,7 +23,8 @@ Connection::Connection(const std::shared_ptr<ContextImpl>& context,
                nullptr,
                peerAddr)
     ,context(context)
-    ,echoTimer(event_new(context->tcp_loop.base, -1, EV_TIMEOUT|EV_PERSIST, &tickEchoS, this))
+    ,echoTimer(__FILE__, __LINE__,
+               event_new(context->tcp_loop.base, -1, EV_TIMEOUT|EV_PERSIST, &tickEchoS, this))
 {
     if(reconn) {
         log_debug_printf(io, "start holdoff timer for %s\n", peerName.c_str());
@@ -70,6 +71,14 @@ void Connection::startConnecting()
 
     if(bufferevent_socket_connect(bev, const_cast<sockaddr*>(&peerAddr->sa), peerAddr.size()))
         throw std::runtime_error("Unable to begin connecting");
+    {
+        auto fd(bufferevent_getfd(bev));
+        int opt = 1;
+        if(setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char*)&opt, sizeof(opt))<0) {
+            auto err(SOCKERRNO);
+            log_warn_printf(io, "Unable to TCP_NODELAY: %d on %d\n", err, fd);
+        }
+    }
 
     connect(bev);
 
@@ -309,7 +318,7 @@ void Connection::handle_CONNECTION_VALIDATED()
 
     if(nameserver) {
         log_info_printf(io, "(re)connected to nameserver %s\n", peerName.c_str());
-        context->poke(true);
+        context->poke();
     }
 }
 
