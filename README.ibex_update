@@ -1,0 +1,12 @@
+See where this module is forked from on github and then add an upstream
+
+e.g. if formed from https://github.com/mdavidsaver/pvxs then
+
+    git remote add upstream https://github.com/mdavidsaver/pvxs
+    git fetch --all
+
+now look for the release tag you need on github upstream e.g. 1.3.1
+
+    git merge 1.3.1
+    git push origin/master
+
