@@ -33,9 +33,10 @@ ConnBase::ConnBase(bool isClient, bool sendBE, bufferevent* bev, const SockAddr&
     ,sendBE(sendBE)
     ,peerBE(true) // arbitrary choice, default should be overwritten before use
     ,expectSeg(false)
+    ,peerVersion(0)
     ,segCmd(0xff)
-    ,segBuf(evbuffer_new())
-    ,txBody(evbuffer_new())
+    ,segBuf(__FILE__, __LINE__, evbuffer_new())
+    ,txBody(__FILE__, __LINE__, evbuffer_new())
     ,state(Holdoff)
 {
     if(bev) // true for server connection.  client will call connect() shortly
@@ -52,7 +53,7 @@ const char* ConnBase::peerLabel() const
 void ConnBase::connect(bufferevent* bev)
 {
     if(!bev)
-        throw std::bad_alloc();
+        throw BAD_ALLOC();
     assert(!this->bev && state==Holdoff);
 
     this->bev.reset(bev);

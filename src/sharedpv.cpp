@@ -92,6 +92,7 @@ struct SharedPV::Impl : public std::enable_shared_from_this<Impl>
             self->subscribers.emplace(std::move(sub));
 
         }catch(std::exception& e){
+            UnGuard U(G);
             log_warn_printf(logshared, "%s Client %s: Can't attach() monitor: %s\n",
                             conn->name().c_str(), conn->peerName().c_str(), e.what());
             // not re-throwing for consistency
@@ -100,6 +101,7 @@ struct SharedPV::Impl : public std::enable_shared_from_this<Impl>
         }
     }
 };
+DEFINE_INST_COUNTER2(SharedPV::Impl, SharedPVImpl);
 
 SharedPV SharedPV::buildMailbox()
 {
@@ -466,7 +468,7 @@ Value SharedPV::fetch() const
     }
 }
 
-struct StaticSource::Impl : public Source
+struct StaticSource::Impl final : public Source
 {
     mutable RWLock lock;
 

@@ -334,7 +334,8 @@ public:
 
     inline void reserve(size_t i) {}
 
-    //! Extend size.  Implies make_unique()
+    //! Extend size.  Implies make_unique().
+    //! @post unique()==true
     void resize(size_t i) {
         if(!this->unique() || i!=this->_count) {
             shared_array o(i);
@@ -343,7 +344,8 @@ public:
         }
     }
 
-    //! Ensure exclusive ownership of array data
+    //! Ensure exclusive ownership of array data by making a copy if necessary.
+    //! @post unique()==true
     inline void make_unique() {
         this->resize(this->size());
     }
@@ -413,6 +415,30 @@ public:
         // inc. + dec. the ref counter...
         this->clear();
         return ret;
+    }
+
+    /** Return non-const (maybe) copy.  consuming this
+     * @post empty()==true
+     * @since 1.1.2
+     *
+     * If unique(), transforms this reference into the returned const reference.
+     * If not unique(), returns a copy and clears this reference.
+     * In either case, the returned reference will be unique().
+     */
+    shared_array<typename std::remove_const<E>::type>
+    thaw() {
+        if(this->unique()) { // only reference, avoid copy
+            shared_array<typename std::remove_const<E>::type> ret(this->_data, (typename std::remove_const<E>::type*)this->_data.get(), this->_count);
+
+            this->clear();
+            return ret;
+
+        } else { // other references, copy
+            shared_array<typename std::remove_const<E>::type> ret(this->_data.get(),
+                                                                  this->_data.get() + this->_count);
+            this->clear();
+            return ret;
+        }
     }
 
 #if _DOXYGEN_
@@ -615,6 +641,22 @@ public:
         // inc. + dec. the ref counter...
         this->clear();
         return ret;
+    }
+
+    shared_array<typename std::remove_const<E>::type>
+    thaw() {
+        if(this->unique()) { // only reference, avoid copy
+            shared_array<typename std::remove_const<E>::type> ret(this->_data, (typename std::remove_const<E>::type*)this->_data.get(), this->_count, this->_type);
+
+            this->clear();
+            return ret;
+
+        } else { // other references, copy
+            auto copy(allocArray(this->_type, this->_count));
+            detail::convertArr(this->_type, copy._data.get(), this->_type, this->_data.get(), this->_count);
+            this->clear();
+            return copy.template castTo<typename std::remove_const<E>::type>();
+        }
     }
 
     // static_cast<TO>() to non-void, preserving const-ness
