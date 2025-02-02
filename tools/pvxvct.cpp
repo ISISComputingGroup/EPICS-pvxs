@@ -64,7 +64,7 @@ parsePeer(const char *optarg)
             // only # of bits.  eg. "/24"
             std::istringstream strm(match[2].str());
             unsigned nbit=0;
-            if((strm>>nbit).good()) {
+            if(!(strm>>nbit).good() || nbit>32) {
                 throw std::runtime_error(pva::SB()<<"Expected number of bits.  not "<<match[2]);
             }
             mask.s_addr = htonl(0xffffffff<<(32-nbit));
@@ -83,7 +83,7 @@ void usage(const char *name)
                "\n"
                "PV Access Virtual Cable Tester\n"
                "\n"
-               "Assist in troubleshooting network (mis)configuration by listening\n"
+               "Assist in troubleshooting network configuration by listening\n"
                "for (some) PVA client/server UDP traffic.\n"
                "\n"
                "  -h               Print this message\n"

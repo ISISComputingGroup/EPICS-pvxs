@@ -86,6 +86,7 @@ struct Connection final : public ConnBase, public std::enable_shared_from_this<C
 
     // While HoldOff, the time until re-connection
     // While Connected, periodic Echo
+    // After early connect() failure, deferred notification
     const evevent echoTimer;
 
     bool ready = false;
@@ -288,7 +289,14 @@ struct ContextImpl : public std::enable_shared_from_this<ContextImpl>
     std::vector<uint8_t> searchMsg;
 
     // search destination address and whether to set the unicast flag
-    std::vector<std::pair<SockEndpoint, bool>> searchDest;
+    struct SearchDest {
+        const SockEndpoint dest;
+        const bool isucast;
+        bool lastSuccess = true;
+        SearchDest(SockEndpoint dest, bool isu) :dest(dest), isucast(isu) {}
+    };
+
+    std::vector<SearchDest> searchDest;
 
     size_t currentBucket = 0u;
     // Channels where we have yet to send out an initial search request

@@ -101,7 +101,7 @@ Interrupted::Interrupted()
 Interrupted::~Interrupted() {}
 
 Timeout::Timeout()
-    :std::runtime_error ("Interrupted")
+    :std::runtime_error ("Timeout")
 {}
 Timeout::~Timeout() {}
 
@@ -798,7 +798,7 @@ void ContextImpl::onBeacon(const UDPManager::Beacon& msg)
     cur.guid = msg.guid;
     cur.peerVersion = msg.peerVersion;
     cur.time = now;
-    // don't trigger if sender changes as server (mis)configuration
+    // don't trigger if sender changes as server configuration
     // could see beacons reach us from multiple interfaces.
     cur.sender = msg.src;
 
@@ -904,6 +904,7 @@ void procSearchReply(ContextImpl& self, const SockAddr& src, uint8_t peerVersion
             chan->conn = Connection::build(self.shared_from_this(), serv);
 
             chan->conn->pending[chan->cid] = chan;
+            chan->nSearch = 0u;
             chan->state = Channel::Connecting;
 
             chan->conn->createChannels();
@@ -1145,37 +1146,42 @@ void ContextImpl::tickSearch(SearchKind kind, bool poked)
             to_wire(H, Header{CMD_SEARCH, 0, uint32_t(consumed-8u)});
         }
         for(auto& pair : searchDest) {
-            auto& dest = pair.first.addr.family()==AF_INET ? searchTx4 : searchTx6;
+            auto& dest = pair.dest.addr.family()==AF_INET ? searchTx4 : searchTx6;
 
-            if(pair.second) {
+            if(pair.isucast) {
                 *pflags |= pva_search_flags::Unicast;
 
             } else {
                 *pflags &= ~pva_search_flags::Unicast;
 
-                dest.mcast_prep_sendto(pair.first);
+                dest.mcast_prep_sendto(pair.dest);
             }
 
             int ntx = sendto(dest.sock, (char*)searchMsg.data(), consumed, 0,
-                             &pair.first.addr->sa, pair.first.addr.size());
+                             &pair.dest.addr->sa, pair.dest.addr.size());
 
             if(ntx<0) {
                 int err = evutil_socket_geterror(dest.sock);
                 auto lvl = Level::Warn;
-                if(err==EINTR || err==EPERM)
+                if(err==EINTR || err==EPERM || !pair.lastSuccess)
                     lvl = Level::Debug;
                 log_printf(io, lvl, "Search tx %s error (%d) %s\n",
-                           pair.first.addr.tostring().c_str(), err, evutil_socket_error_to_string(err));
+                           pair.dest.addr.tostring().c_str(), err, evutil_socket_error_to_string(err));
+                pair.lastSuccess = false;
 
             } else if(unsigned(ntx)<consumed) {
-                log_warn_printf(io, "Search truncated %u < %u",
+                log_warn_printf(io, "Search tx truncated %u < %u",
                            unsigned(ntx), unsigned(consumed));
 
             } else {
-                log_hex_printf(io, Level::Debug, (char*)searchMsg.data(), consumed,
-                               "Search to %s %s\n",
-                               std::string(SB()<<pair.first).c_str(),
-                               pair.second ? "ucast" : "bcast");
+                auto lvl = Level::Info;
+                if(pair.lastSuccess)
+                    lvl = Level::Debug;
+                log_hex_printf(io, lvl, (char*)searchMsg.data(), consumed,
+                               "Search tx %s %s\n",
+                               std::string(SB()<<pair.dest).c_str(),
+                               pair.isucast ? "ucast" : "bcast");
+                pair.lastSuccess = true;
             }
         }
         *pflags |= 0x80; // TCP search is always "unicast"
