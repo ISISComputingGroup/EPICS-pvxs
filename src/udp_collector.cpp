@@ -392,7 +392,7 @@ void UDPCollector::process_one(const SockAddr &dest, const uint8_t *buf, size_t 
                     (L->searchCB)(*this);
                 } else if(L->searchCB && !(L->dest.addr.isAny())) {
                     for(auto B : sock.broadcasts(&(L->dest.addr))) {
-                        if(!B.compare(dest, false) && L->dest.addr.port() == dest.port()) {
+                        if(!(B.compare(dest, false)) && (L->dest.addr.port() == dest.port())) {
                             log_debug_printf(logio, "Processing broadcast %s on %s\n",
                                 dest.tostring().c_str(), L->dest.addr.tostring().c_str());
                             (L->searchCB)(*this);
