@@ -100,6 +100,7 @@ class PVXS_API UDPListener
     std::shared_ptr<UDPCollector> collector;
     const SockEndpoint dest;
     MCastMembership cur;
+    std::vector<SockAddr> broadcasts;
     bool active;
 
     INST_COUNTER(UDPListener);

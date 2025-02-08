@@ -282,7 +282,7 @@ struct PVXS_API evsocket
     void enable_IP_PKTINFO() const;
 
     //! wraps osiSockDiscoverBroadcastAddresses()
-    std::vector<SockAddr> broadcasts(const SockAddr* match=nullptr) const;
+    static std::vector<SockAddr> broadcasts(const SockAddr* match=nullptr);
 
     static
     size_t get_buffer_size(evutil_socket_t sock, bool tx);

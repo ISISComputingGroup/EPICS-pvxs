@@ -388,14 +388,16 @@ void UDPCollector::process_one(const SockAddr &dest, const uint8_t *buf, size_t 
             *M.save() = '\0';
 
             for(auto L : listeners) {
-                if(L->searchCB && (L->dest.addr.isAny() || L->dest.addr==dest)) {
-                    (L->searchCB)(*this);
-                } else if(L->searchCB && !(L->dest.addr.isAny())) {
-                    for(auto B : sock.broadcasts(&(L->dest.addr))) {
-                        if(!(B.compare(dest, false)) && (L->dest.addr.port() == dest.port())) {
-                            log_debug_printf(logio, "Processing broadcast %s on %s\n",
-                                dest.tostring().c_str(), L->dest.addr.tostring().c_str());
-                            (L->searchCB)(*this);
+                if(L->searchCB) {
+                    if (L->dest.addr.isAny() || L->dest.addr==dest) {
+                        (L->searchCB)(*this);
+                    } else if(!(L->dest.addr.isAny())) {
+                        for(auto B : L->broadcasts) {
+                            if(!(B.compare(dest, false)) && (L->dest.addr.port() == dest.port())) {
+                                log_debug_printf(logio, "Processing broadcast %s on %s\n",
+                                    dest.tostring().c_str(), L->dest.addr.tostring().c_str());
+                                (L->searchCB)(*this);
+                            }
                         }
                     }
                 }
@@ -634,8 +636,10 @@ UDPListener::UDPListener(const std::shared_ptr<UDPManager::Pvt> &manager, SockEn
         ep.addr.setPort(collector->bind_addr.port());
         return ep;
     }())
+    ,broadcasts()
     ,active(false)
 {
+    broadcasts = evsocket::broadcasts(&(dest.addr));
     manager->loop.assertInLoop();
 }
 

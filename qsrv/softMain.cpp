@@ -132,6 +132,7 @@ void lazy_dbd(const std::string& dbd_file) {
 
 int main(int argc, char *argv[])
 {
+    epicsThreadSleep(30.0);
     try {
         std::string dbd_file(DBD_FILE),
                     exit_file(EXIT_FILE),

@@ -606,15 +606,15 @@ void evsocket::ipv6_only(bool b) const
                    evutil_socket_error_to_string(evutil_socket_geterror(sock)));
 }
 
-std::vector<SockAddr> evsocket::broadcasts(const SockAddr* match) const
+std::vector<SockAddr> evsocket::broadcasts(const SockAddr* match)
 {
     if(match && match->family()!=AF_INET) {
         throw std::logic_error("osiSockDiscoverBroadcastAddresses() only understands AF_INET");
     }
 
     std::vector<SockAddr> ret;
-    if(af==AF_INET6)
-        return ret; // IPv6 does not have broadcast addresses
+ //   if(af==AF_INET6)
+  //      return ret; // IPv6 does not have broadcast addresses
 
     evsocket dummy(AF_INET, SOCK_DGRAM, 0);
 
