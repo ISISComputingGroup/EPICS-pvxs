@@ -119,6 +119,9 @@ struct GPROp : public OperationBase
     // For GET, PUT a duplicate of RequestInfo::prototype
     Value arg;
     Result result;
+    bool builder_busy = false;
+    bool done_busy = false;
+    bool onInit_busy = false;
     bool getOput = false;
     bool autoExec = true;
 
@@ -138,7 +141,7 @@ struct GPROp : public OperationBase
         :OperationBase (op, loop, name)
     {}
     ~GPROp() {
-        if(loop.assertInRunningLoop())
+        if(onWorker && loop.assertInRunningLoop())
             _cancel(true);
     }
 
@@ -156,6 +159,7 @@ struct GPROp : public OperationBase
     }
 
     void notify() {
+        done_busy = true;
         try {
             if(done)
                 done(std::move(result));
@@ -168,17 +172,23 @@ struct GPROp : public OperationBase
             if(!result.error())
                 result = Result(std::current_exception());
         }
+        done_busy = false;
     }
 
     virtual bool cancel() override final
     {
-        decltype (done) junk;
+        decltype (builder) junkB;
+        decltype (done) junkD;
         decltype (onInit) junkI;
         bool ret = false;
-        (void)loop.tryCall([this, &junk, &junkI, &ret](){
+        (void)loop.tryCall([&, this](){
             ret = _cancel(false);
-            junk = std::move(done);
-            junkI = std::move(onInit);
+            if(!builder_busy)
+                junkB.swap(builder);
+            if(!done_busy)
+                junkD.swap(done);
+            if(!onInit_busy)
+                junkI.swap(onInit);
             // leave opByIOID for GC
         });
         return ret;
@@ -218,10 +228,16 @@ struct GPROp : public OperationBase
             if(self->state!=Idle)
                 return;
 
+            if(self->done_busy)
+                throw std::logic_error("done callback in progress");
+
             if(self->op==RPC) {
                 self->arg = std::move(a);
 
             } else if(put && self->op==Put) {
+                if(self->builder_busy)
+                    throw std::logic_error("builder callback in progress");
+
                 self->builder = [a](Value&&) noexcept -> Value {
                     // caller should be passing a Value of the correct prototype
                     // given through onInit().
@@ -273,16 +289,20 @@ struct GPROp : public OperationBase
 
         // transient state (because builder callback is synchronous)
         if(state==GPROp::BuildPut) {
-            temp = arg.clone();
 
+            builder_busy = true;
             try {
-                temp = builder(std::move(temp));
+                if(builder)
+                    temp = builder(arg.clone());
+                else
+                    temp = arg.cloneEmpty();
                 state = GPROp::Exec;
 
             } catch(std::exception& e) {
                 result = Result(std::current_exception());
                 state = GPROp::Done;
             }
+            builder_busy = false;
         }
 
         // act on new operation state
@@ -315,7 +335,7 @@ struct GPROp : public OperationBase
                 // nothing more needed
 
             } else {
-                throw std::logic_error("Invalid state in GPR sendReply()");
+                throw std::logic_error(SB()<<"Invalid state "<<int(state)<<" for GPR sendReply() ");
             }
         }
         chan->statTx += chan->conn->enqueueTxBody(state==GPROp::Done ? CMD_DESTROY_REQUEST :  (pva_app_msg_t)op);
@@ -517,10 +537,13 @@ void Connection::handle_GPR(pva_app_msg_t cmd)
         if(cmd==CMD_PUT || cmd==CMD_GET)
             gpr->arg = data; // save for later use in sendReply() when RequestInfo not available
 
+        gpr->onInit_busy = true;
         try {
             if(gpr->onInit)
                 gpr->onInit(data);
+            gpr->onInit_busy = false;
         } catch(std::exception& e) {
+            gpr->onInit_busy = false;
             log_err_printf(setup, "Server %s op%02x \"%s\" onInit() error: %s\n",
                            peerName.c_str(), cmd, gpr->chan->name.c_str(), e.what());
             gpr->result = Result(std::current_exception());
@@ -592,6 +615,12 @@ std::shared_ptr<Operation> gpr_setup(const std::shared_ptr<ContextImpl>& context
         // (maybe) user thread
         auto temp(std::move(internal));
         auto loop(temp->loop);
+        if(syncCancel && loop.inLoop())
+            log_err_printf(io,
+                           "syncCancel op%u '%s' being destroyed on worker thread.\n"
+                           "Possible self-reference loop.  Setup with .syncCancel(false) if intended.\n",
+                           temp->op, temp->channelName.c_str());
+
         // std::bind for lack of c++14 generalized capture
         // to move internal ref to worker for dtor
         loop.tryInvoke(syncCancel, std::bind([](std::shared_ptr<GPROp>& op) {
@@ -605,6 +634,7 @@ std::shared_ptr<Operation> gpr_setup(const std::shared_ptr<ContextImpl>& context
 
     context->tcp_loop.dispatch([internal, context, name, server]() {
         // on worker
+        internal->onWorker = true;
 
         try {
             internal->chan = Channel::build(context, name, server);

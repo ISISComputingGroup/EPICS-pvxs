@@ -12,6 +12,7 @@
 #include <dbDefs.h>
 #include <epicsThread.h>
 #include <epicsGuard.h>
+#include <osiProcess.h>
 
 #include <pvxs/log.h>
 #include <clientimpl.h>
@@ -510,10 +511,32 @@ Value buildCAMethod()
 {
     using namespace pvxs::members;
 
-    return TypeDef(TypeCode::Struct, {
-                       String("user"),
-                       String("host"),
-                   }).create();
+    auto cred(TypeDef(TypeCode::Struct, {
+                                            String("user"),
+                                            String("host"),
+                                        }).create());
+
+    std::vector<char> buffer(256u);
+
+    if(osiGetUserName(&buffer[0], buffer.size()) == osiGetUserNameSuccess) {
+        buffer[buffer.size()-1] = '\0';
+        cred["user"] = buffer.data();
+    } else {
+        cred["user"] = "nobody";
+    }
+
+    if (gethostname(&buffer[0], buffer.size()) == 0) {
+        buffer[buffer.size()-1] = '\0';
+        cred["host"] = buffer.data();
+    } else {
+        cred["host"] = "invalidhost.";
+    }
+
+    log_info_printf(setup, "Will 'ca' auth as %s@%s\n",
+                    cred["user"].as<std::string>().c_str(),
+                    cred["host"].as<std::string>().c_str());
+
+    return cred;
 }
 
 ContextImpl::ContextImpl(const Config& conf, const evbase& tcp_loop)
@@ -781,12 +804,16 @@ void ContextImpl::onBeacon(const UDPManager::Beacon& msg)
 
     auto& cur(it->second);
 
-    if(action==Update && (cur.guid!=msg.guid || cur.peerVersion!=msg.peerVersion)) {
+    if(action==Update && (
+            cur.guid!=msg.guid ||
+            cur.peerVersion!=msg.peerVersion ||
+            cur.beaconChange!=msg.beaconChange
+    )) {
         action = Change;
         log_debug_printf(beacon, "Update server %s\n",
                          std::string(SB()<<msg.src<<" : "<<msg.server<<'/'<<msg.proto
-                                     <<" "<<cur.guid<<'/'<<(unsigned)cur.peerVersion
-                                     <<" -> "<<msg.guid<<'/'<<(unsigned)msg.peerVersion).c_str());
+                                     <<" "<<cur.guid<<'/'<<(unsigned)cur.peerVersion<<'@'<<cur.beaconChange
+                                     <<" -> "<<msg.guid<<'/'<<(unsigned)msg.peerVersion<<'@'<<msg.beaconChange).c_str());
 
         serverEvent(Discovered{Discovered::Timeout,
                                cur.peerVersion,
@@ -800,6 +827,7 @@ void ContextImpl::onBeacon(const UDPManager::Beacon& msg)
 
     cur.guid = msg.guid;
     cur.peerVersion = msg.peerVersion;
+    cur.beaconChange = msg.beaconChange;
     cur.time = now;
     // don't trigger if sender changes as server configuration
     // could see beacons reach us from multiple interfaces.
@@ -809,7 +837,7 @@ void ContextImpl::onBeacon(const UDPManager::Beacon& msg)
         if(action==New)
             log_debug_printf(beacon, "New server %s\n",
                              std::string(SB()<<msg.src<<" : "<<msg.server<<'/'<<msg.proto
-                                         <<" "<<cur.guid<<'/'<<(unsigned)cur.peerVersion).c_str());
+                             <<" "<<cur.guid<<'/'<<(unsigned)cur.peerVersion<<'@'<<cur.beaconChange).c_str());
 
         serverEvent(Discovered{Discovered::Online,
                                msg.peerVersion,
@@ -940,8 +968,8 @@ bool ContextImpl::onSearch(evutil_socket_t fd)
         if(err==SOCK_EWOULDBLOCK || err==EAGAIN || err==SOCK_EINTR) {
             // nothing to do here
         } else {
-            log_warn_printf(io, "UDP search RX Error on : %s\n",
-                       evutil_socket_error_to_string(err));
+            log_warn_printf(io, "UDP search RX Error (%d) : %s\n",
+                       err, evutil_socket_error_to_string(err));
         }
         return false; // wait for more I/O
 
@@ -1325,10 +1353,9 @@ void ContextImpl::cacheClean(const std::string& name, Context::cacheAction actio
             continue;
 
         else if(action!=Context::Clean || cur->second.use_count()<=1) {
-            cur->second->garbage = true;
 
             if(action==Context::Clean && !cur->second->garbage) {
-                // mark for next sweep
+                cur->second->garbage = true;
                 log_debug_printf(setup, "Chan GC mark '%s':'%s'\n",
                                  cur->first.first.c_str(), cur->first.second.c_str());
 
@@ -1340,12 +1367,19 @@ void ContextImpl::cacheClean(const std::string& name, Context::cacheAction actio
 
                 // explicitly break ref. loop of channel cache
                 chanByName.erase(cur);
+                if(chanByCID.erase(trash->cid)!=1)
+                    log_crit_printf(io, "Inconsistent chanByName vs. chanByCID for %s\n", trash->name.c_str());
 
                 if(action==Context::Disconnect) {
                     trash->disconnect(trash);
                 }
             }
         }
+    }
+
+    if(chanByName.size() != chanByCID.size()) {
+        log_crit_printf(io, "Inconsistent sizes chanByName %zu vs. chanByCID %zu",
+                        chanByName.size(), chanByCID.size());
     }
 }
 

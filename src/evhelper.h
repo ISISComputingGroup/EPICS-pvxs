@@ -198,6 +198,7 @@ public:
             return tryDispatch(std::move(fn));
     }
 
+    bool inLoop() const;
     void assertInLoop() const;
     //! Caller must be on the worker, or the worker must be stopped.
     //! @returns true if working is running.
@@ -251,10 +252,13 @@ struct PVXS_API evsocket
 
     ~evsocket();
 
+    // caller takes ownership of socket
+    void release();
+
     SockAddr sockname() const;
 
     // test validity
-    inline operator bool() const { return sock!=-1; }
+    inline operator bool() const { return sock!=EVUTIL_INVALID_SOCKET; }
 
     void bind(const SockAddr& addr) const;
     void bind(SockAddr& addr) const;

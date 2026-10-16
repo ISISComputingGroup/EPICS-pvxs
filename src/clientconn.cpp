@@ -4,8 +4,6 @@
  * in file LICENSE that is included with this distribution.
  */
 
-#include <osiProcess.h>
-
 #include <pvxs/log.h>
 #include "clientimpl.h"
 
@@ -61,9 +59,12 @@ void Connection::startConnecting()
 {
     assert(!this->bev);
 
+    evsocket sock(peerAddr.family(), SOCK_STREAM, 0);
     decltype(this->bev) bev(__FILE__, __LINE__,
-                bufferevent_socket_new(context->tcp_loop.base, -1,
+                bufferevent_socket_new(context->tcp_loop.base, sock.sock,
                                        BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS));
+
+    sock.release(); // hand-off ownership to bev
 
     bufferevent_setcb(bev.get(), &bevReadS, nullptr, &bevEventS, this);
 
@@ -258,23 +259,7 @@ void Connection::handle_CONNECTION_VALIDATION()
 
     Value cred;
     if(selected=="ca") {
-        cred = context->caMethod.cloneEmpty();
-
-        std::vector<char> buffer(256u);
-
-        if(osiGetUserName(&buffer[0], buffer.size()) == osiGetUserNameSuccess) {
-            buffer[buffer.size()-1] = '\0';
-            cred["user"] = buffer.data();
-        } else {
-            cred["user"] = "nobody";
-        }
-
-        if (gethostname(&buffer[0], buffer.size()) == 0) {
-            buffer[buffer.size()-1] = '\0';
-            cred["host"] = buffer.data();
-        } else {
-            cred["host"] = "invalidhost.";
-        }
+        cred = context->caMethod.clone();
 
         log_info_printf(io, "Server %s 'ca' auth as %s@%s\n", peerName.c_str(),
                         cred["user"].as<std::string>().c_str(),
@@ -381,13 +366,31 @@ void Connection::handle_CREATE_CHANNEL()
     chan->statRx += rxlen;
 
     if(!sts.isSuccess()) {
-        // server refuses to create a channel, but presumably responded positively to search
+        if(chan->forcedServer.family()==AF_UNSPEC) {
+            // server refuses to create a channel, but presumably responded positively to search.
+            // try again
 
-        chan->state = Channel::Searching;
-        context->searchBuckets[context->currentBucket].push_back(chan);
+            log_warn_printf(io, "Server %s refuses channel to '%s' : %s\n", peerName.c_str(),
+                            chan->name.c_str(), sts.msg.c_str());
 
-        log_warn_printf(io, "Server %s refuses channel to '%s' : %s\n", peerName.c_str(),
-                        chan->name.c_str(), sts.msg.c_str());
+            // add to the far future bucket to slow down a re-try loop
+            auto laterBucket = context->currentBucket;
+            if(laterBucket)
+                laterBucket--;
+            else
+                laterBucket = context->searchBuckets.size()-1u;
+
+            chan->state = Channel::Searching;
+            context->searchBuckets[laterBucket].push_back(chan);
+
+        } else {
+            // server refused after we bypassed search, so can't use usual retry method.
+            // refuse to create a tight retry loop, and drop on the floor for now.
+            // retry on reconnect.
+            log_err_printf(io, "Server %s refuses direct channel to '%s' : %s\n", peerName.c_str(),
+                            chan->name.c_str(), sts.msg.c_str());
+            return;
+        }
 
     } else {
         chan->state = Channel::Active;

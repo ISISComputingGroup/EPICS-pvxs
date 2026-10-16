@@ -52,7 +52,12 @@ record(stringout, "src:str") {
 
 record(longout, "testToFromString:src") {
     field(VAL , "42")
-    field(OUT , {pva:"testToFromString:str1"})
+    field(OUT , {pva:{
+        "pv":"testToFromString:str1",
+        "proc":null,
+        "sevr":null,
+        "local":null,
+    }})
 }
 record(stringin, "testToFromString:str1") {
 }
@@ -218,4 +223,9 @@ record(aai, "target:ntndarray_inp") {
     field(INP,  {pva:{pv:"source:ntndarray", proc:"CP"}}) # created programatically with pvxs::server::SharedPV
     field(NELM, "5")
     field(FTVL, "FLOAT")
+}
+
+record(longin, "target:utag") {
+    field(INP, {pva:{pv:"source:utag", time:true, proc:"CP"}})
+    field(TSE, "-2")
 }

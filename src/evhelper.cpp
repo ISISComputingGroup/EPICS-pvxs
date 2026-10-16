@@ -11,6 +11,10 @@
 #  include <mswsock.h>
 #endif
 
+#ifdef __rtems__
+#  include <rtems/score/cpuopts.h>
+#endif
+
 #include <cstring>
 #include <system_error>
 #include <deque>
@@ -175,12 +179,20 @@ struct evbase::Pvt final : public epicsThreadRunable
         try {
             evconfig conf(__FILE__, __LINE__, event_config_new());
 #ifdef __rtems__
+#  if (__RTEMS_MAJOR__ < 6) || (__RTEMS_MAJOR__ == 6 && __RTEMS_MINOR__ <= 2)
             /* with libbsd circa RTEMS 5.1
              * TCP peer close/reset notifications appear to be lost.
              * Maybe due to absence of NOTE_EOF?
              * poll() seems to work though.
+             *
+             * The rtems-libbsd descriptor fixes restoring kqueue ship in
+             * RTEMS 6.3; the version condition follows the rtems-libbsd
+             * maintainer's recommendation.  Note the poll backend spins
+             * on RTEMS 6: libbsd reports POLLERR for the pipe() libevent
+             * notifies itself through.
              */
             event_config_avoid_method(conf.get(), "kqueue");
+#  endif
 #endif
             decltype (base) tbase(__FILE__, __LINE__, event_base_new_with_config(conf.get()));
             if(evthread_make_base_notifiable(tbase.get())) {
@@ -348,6 +360,11 @@ bool evbase::_call(mfunction&& fn, bool dothrow) const
     return true;
 }
 
+bool evbase::inLoop() const
+{
+    return pvt->worker.isCurrentThread();
+}
+
 void evbase::assertInLoop() const
 {
     if(!pvt->worker.isCurrentThread()) {
@@ -396,6 +413,17 @@ evsocket::evsocket(int af, evutil_socket_t sock, bool blocking)
     }
 
     evutil_make_socket_closeonexec(sock);
+
+#ifdef SO_NOSIGPIPE
+    // probably OSX only
+    {
+        int val = 1;
+        if(setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, (char*)&val, sizeof(val))) {
+            log_warn_printf(logerr, "Unable to set SO_NOSIGPIPE (err=%d).\n",
+                            evutil_socket_geterror(sock));
+        }
+    }
+#endif
 
     if(!blocking && evutil_make_socket_nonblocking(sock)) {
         evutil_closesocket(sock);
@@ -451,6 +479,11 @@ evsocket::~evsocket()
 {
     if(sock!=evutil_socket_t(-1))
         evutil_closesocket(sock);
+}
+
+void evsocket::release()
+{
+    sock = evutil_socket_t(-1);
 }
 
 SockAddr evsocket::sockname() const

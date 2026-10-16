@@ -83,19 +83,7 @@ struct MonitorOp final : public ServerOp
         {
             // based on operation state, yes
             server->acceptor_loop.dispatch([op](){
-                auto ch(op->chan.lock());
-                if(!ch)
-                    return;
-                auto conn(ch->conn.lock());
-                if(!conn || conn->state==ConnBase::Disconnected)
-                    return;
-
-                if(conn->connection() && (bufferevent_get_enabled(conn->connection())&EV_READ)) {
-                    doReply(op);
-                } else {
-                    // connection TX queue is too full
-                    conn->backlog.emplace_back([op]() { doReply(op); });
-                }
+                doReply(op);
             });
 
             op->scheduled = true;
@@ -109,6 +97,7 @@ struct MonitorOp final : public ServerOp
         }
     }
 
+    // on tcp worker thread
     static
     void doReply(const std::shared_ptr<MonitorOp>& self)
     {
@@ -116,16 +105,30 @@ struct MonitorOp final : public ServerOp
         if(!ch)
             return;
         auto conn = ch->conn.lock();
-        if(!conn || !conn->connection())
+        if(!conn || !conn->connection() || conn->state==ConnBase::Disconnected)
             return;
 
         Guard G(self->lock);
+
         self->scheduled = false;
 
         log_debug_printf(connio, "%s state=%d\n", __func__, self->state);
 
         if(self->state==Dead)
             return;
+
+        // check connection TX buffer level
+        {
+            auto bev = conn->connection();
+            if(evbuffer_get_length(bufferevent_get_output(bev)) >= conn->tcp_tx_limit) {
+                log_debug_printf(connio, "Client %s IOID %u TX queue is too full defer to backlog\n",
+                                 conn->peerName.c_str(), unsigned(self->ioid));
+
+                conn->backlog.emplace_back([self]() { doReply(self); });
+                self->scheduled = true;
+                return;
+            }
+        }
 
         uint8_t subcmd = 0u;
         if(self->state==Creating) {
@@ -309,7 +312,7 @@ struct ServerMonitorControl : public server::MonitorControlOp
         stat.maxQueue = mon->maxQueue;
         stat.limitQueue = mon->limit;
         stat.window = mon->window;
-        stat.nQueue = mon->nSquash;
+        stat.nSquash = mon->nSquash;
 
         if(reset)
             mon->maxQueue = mon->nSquash = 0u;
@@ -376,7 +379,7 @@ struct ServerMonitorControl : public server::MonitorControlOp
 };
 DEFINE_INST_COUNTER(ServerMonitorControl);
 
-struct ServerMonitorSetup : public server::MonitorSetupOp
+struct ServerMonitorSetup final : public server::MonitorSetupOp
 {
     ServerMonitorSetup(ServerConn* conn,
                      const std::weak_ptr<server::Server::Pvt>& server,
@@ -407,7 +410,7 @@ struct ServerMonitorSetup : public server::MonitorSetupOp
             if(auto oper = op.lock()) {
                 if(oper->state!=ServerOp::Creating)
                     return;
-                oper->type = type;
+                oper->type = std::move(type);
                 oper->pvMask = std::move(mask);
                 ret.reset(new ServerMonitorControl(this, server, _name, oper));
                 MonitorOp::doReply(oper);
@@ -441,8 +444,10 @@ struct ServerMonitorSetup : public server::MonitorSetupOp
         if(!serv)
             return;
         serv->acceptor_loop.call([this, &fn](){
-            if(auto oper = op.lock())
-                oper->onClose = std::move(fn);
+            if(auto oper = op.lock()) {
+                if(oper->state != ServerOp::Dead)
+                    oper->onClose = std::move(fn);
+            }
         });
     }
 
@@ -558,7 +563,7 @@ void ServerConn::handle_MONITOR()
                     if(sval.size()>1 && sval.back()=='%') {
                         try {
                             auto percent = parseTo<double>(sval.substr(0, sval.size()-1u));
-                            op->ackAt = std::max(0.0, std::min(percent, 100.0)) * op->limit;
+                            op->ackAt = std::max(0.0, std::min(percent, 100.0)) / 100.0 * op->limit;
                         }catch(std::exception& e){
                             logRemote(ioid, Level::Crit,
                                       SB()<<"Unable to parse% "<<pvRequest.nameOf(ackAny)<<" : "<<sval<<" : "<<e.what());
@@ -586,7 +591,13 @@ void ServerConn::handle_MONITOR()
                    std::string(SB()<<pvRequest).c_str());
 
         if(chan->onSubscribe) {
-            chan->onSubscribe(std::move(ctrl));
+            try {
+                chan->onSubscribe(std::move(ctrl));
+            }catch(std::exception& e){
+                // a remote error will be signaled from ~ServerMonitorSetup
+                log_err_printf(connsetup, "Client %s Monitor \"%s\" onSubscribe() error: %s\n",
+                               peerName.c_str(), chan->name.c_str(), e.what());
+            }
         } else {
             ctrl->error("Monitor operation not implemented by this PV");
         }
@@ -676,8 +687,14 @@ void ServerConn::handle_MONITOR()
                 op->state = start ? ServerOp::Executing : ServerOp::Idle;
             }
 
-            if(op->onStart)
-                op->onStart(start);
+            if(op->onStart) {
+                try {
+                    op->onStart(start);
+                }catch(std::exception& e){
+                    log_err_printf(connsetup, "Client %s IOID %u \"%s\" onStart() error: %s\n",
+                                   peerName.c_str(), unsigned(ioid), chan->name.c_str(), e.what());
+                }
+            }
 
             {
                 Guard G(op->lock);

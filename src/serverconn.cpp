@@ -84,6 +84,9 @@ ServerConn::ServerConn(ServIface* iface, evutil_socket_t sock, struct sockaddr *
     timeval tmo(totv(iface->server->effective.tcpTimeout));
     bufferevent_set_timeouts(bev.get(), &tmo, &tmo);
 
+    // set threshold to begin clearing backlog
+    bufferevent_setwatermark(this->bev.get(), EV_WRITE, tcp_tx_limit, 0);
+
     auto tx = bufferevent_get_output(bev.get());
 
     std::vector<uint8_t> buf(128);
@@ -282,8 +285,14 @@ void ServerConn::handle_CANCEL_REQUEST()
     if(op->state==ServerOp::Executing) {
         op->state = ServerOp::Idle;
 
-        if(op->onCancel)
-            op->onCancel();
+        if(op->onCancel) {
+            try {
+                op->onCancel();
+            }catch(std::exception& e){
+                log_err_printf(connsetup, "IOID %u to \"%s\" remote onCancel() error: %s\n",
+                               unsigned(ioid), chan->name.c_str(), e.what());
+            }
+        }
 
     } else {
         // an allowed race
@@ -378,23 +387,6 @@ void ServerConn::cleanup()
     }
 }
 
-void ServerConn::bevRead()
-{
-    ConnBase::bevRead();
-
-    if(bev) {
-        auto tx = bufferevent_get_output(bev.get());
-
-        if(evbuffer_get_length(tx)>=tcp_tx_limit) {
-            // write buffer "full".  stop reading until it drains
-            // TODO configure
-            (void)bufferevent_disable(bev.get(), EV_READ);
-            bufferevent_setwatermark(bev.get(), EV_WRITE, tcp_tx_limit/2, 0);
-            log_debug_printf(connio, "%s suspend READ\n", peerName.c_str());
-        }
-    }
-}
-
 void ServerConn::bevWrite()
 {
     log_debug_printf(connio, "%s process backlog\n", peerName.c_str());
@@ -407,13 +399,6 @@ void ServerConn::bevWrite()
         backlog.pop_front();
 
         fn();
-    }
-
-    // TODO configure
-    if(evbuffer_get_length(tx)<tcp_tx_limit) {
-        (void)bufferevent_enable(bev.get(), EV_READ);
-        bufferevent_setwatermark(bev.get(), EV_WRITE, 0, 0);
-        log_debug_printf(connio, "%s resume READ\n", peerName.c_str());
     }
 }
 
@@ -510,15 +495,24 @@ void ServerOp::cleanup()
     if(state==ServerOp::Dead)
         return;
 
-    if(state==ServerOp::Executing && onCancel) {
-        auto fn(std::move(onCancel));
-        fn();
+    if(onCancel) {
+        decltype(onCancel) fn;
+        fn.swap(onCancel);
+        if(state==ServerOp::Executing) {
+            try {
+                fn();
+            }catch(std::exception& e){
+                auto ch(chan.lock());
+                log_err_printf(connsetup, "IOID %u to \"%s\" cleanup onCancel() error: %s\n",
+                               unsigned(ioid), ch ? ch->name.c_str() : "<defunct>", e.what());
+            }
+        }
     }
 
     state = ServerOp::Dead;
 
-    onCancel = nullptr;
-    auto closer(std::move(onClose));
+    decltype(onClose) closer;
+    closer.swap(onClose);
     bool notify = closer.operator bool();
 
     if(auto ch = chan.lock()) {
@@ -536,8 +530,15 @@ void ServerOp::cleanup()
         }
     }
 
-    if(notify)
-        closer("");
+    if(notify) {
+        // no loop to dispatch to, so this one is not caught by evhelper
+        try {
+            closer("");
+        }catch(std::exception& e){
+            log_err_printf(connsetup, "IOID %u onClose() error: %s\n",
+                           unsigned(ioid), e.what());
+        }
+    }
 }
 
 }} // namespace pvxs::impl
